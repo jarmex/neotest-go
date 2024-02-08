@@ -69,6 +69,20 @@ function adapter.discover_positions(path)
         (#match? @test.method "^Run$")
       arguments: (argument_list . (interpreted_string_literal) @test.name))
       @test.definition
+
+    ;;query for Namespace or Context Block
+    ((call_expression
+      function: (identifier) @func_name (#match? @func_name "^(Describe|Context)$")
+      arguments: (argument_list (_) @namespace.name (func_literal))
+    )) @namespace.definition
+
+    ;;query for It or DescribeTable block
+    ((call_expression
+        function: (identifier) @func_name
+        arguments: (argument_list (_) @test.name (func_literal))
+    ) (#match? @func_name "^(It|DescribeTable)$")) @test.definition
+
+
   ]]
 
   if get_experimental_opts().test_table then
