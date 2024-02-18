@@ -46,13 +46,13 @@ function GoLangNeotestAdapter.discover_positions(path)
     ;;query for Namespace or Context Block
     ((call_expression
       function: (identifier) @func_name (#match? @func_name "^(Describe|Context)$")
-      arguments: (argument_list (_) @namespace.name (func_literal))
+      arguments: (argument_list (interpreted_string_literal) @namespace.name (func_literal))
     )) @namespace.definition
 
     ;;query for It or DescribeTable block
     ((call_expression
         function: (identifier) @func_name
-        arguments: (argument_list (_) @test.name (func_literal))
+        arguments: (argument_list (interpreted_string_literal) @test.name (func_literal))
     ) (#match? @func_name "^(It|DescribeTable)$")) @test.definition
 
 
@@ -66,21 +66,26 @@ function GoLangNeotestAdapter.discover_positions(path)
   })
 end
 
-local function escapeTestPattern(s)
-  return (
-    s:gsub("%(", "%\\(")
-      :gsub("%)", "%\\)")
-      :gsub("%]", "%\\]")
-      :gsub("%[", "%\\[")
-      :gsub("%*", "%\\*")
-      :gsub("%+", "%\\+")
-      :gsub("%-", "%\\-")
-      :gsub("%?", "%\\?")
-      :gsub("%$", "%\\$")
-      :gsub("%^", "%\\^")
-      :gsub("%/", "%\\/")
-      :gsub("%'", "%\\'")
-  )
+local function get_default_strategy_config(strategy, command, cwd)
+  local config = {
+    dap = function()
+      return {
+        name = "Debug Go Tests",
+        type = "go",
+        request = "launch",
+        mode = "test",
+        args = { unpack(command, 2) },
+        runtimeExecutable = command[1],
+        console = "integratedTerminal",
+        internalConsoleOptions = "neverOpen",
+        rootPath = "${workspaceFolder}",
+        cwd = cwd or "${workspaceFolder}",
+      }
+    end,
+  }
+  if config[strategy] then
+    return config[strategy]()
+  end
 end
 
 ---@async
@@ -114,20 +119,23 @@ GoLangNeotestAdapter.build_spec = function(args)
     "test",
     "-v",
     "-json",
+    "-count=1",
   })
 
-  local testNamePattern = position.name
+  -- print(vim.inspect(position))
   if position.type == "test" or position.type == "namespace" then
     -- pos.id in form "path/to/file::Describe text::test text"
     -- e.g.: id = '/Users/jarmex/Projects/go/testing/main_test.go::"Main"::can_multiply_up_two_numbers',
     local testName = string.sub(position.id, string.find(position.id, "::") + 2)
     testName, _ = string.gsub(testName, "::", " ")
+    testName, _ = string.gsub(testName, "_", " ") -- tempporary fix for ginkgo
     testName, _ = string.gsub(testName, '"', "")
-    testNamePattern = escapeTestPattern(testName)
-    vim.list_extend(command, { "-ginkgo.focus", '"' .. testNamePattern .. '"' })
+    vim.list_extend(command, { "-ginkgo.focus", '"' .. testName .. '"' })
   else
     vim.list_extend(command, { dir })
   end
+
+  -- print(vim.inspect(command))
 
   return {
     command = table.concat(command, " "),
@@ -136,6 +144,7 @@ GoLangNeotestAdapter.build_spec = function(args)
       file = position.path,
       name = position.name,
     },
+    strategy = get_default_strategy_config(args.strategy, command, position.path),
   }
 end
 
@@ -199,6 +208,7 @@ function GoLangNeotestAdapter.prepare_results(tree, lines, go_root, go_module)
       fn.writefile(test.output, fname)
       results[value.id] = {
         status = test.status,
+        short = table.concat(test.output, ""),
         output = fname,
       }
 
@@ -209,6 +219,7 @@ function GoLangNeotestAdapter.prepare_results(tree, lines, go_root, go_module)
       if test.status == test_statuses.fail and file_id then
         results[file_id].status = test_statuses.fail
       end
+      -- print(vim.inspect(results))
     end
   end
 
