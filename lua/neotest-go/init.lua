@@ -7,26 +7,16 @@ local utils = require("neotest-go.utils")
 local output = require("neotest-go.output")
 local test_statuses = require("neotest-go.test_status")
 
-local function get_experimental_opts()
-  return {
-    test_table = false,
-  }
-end
-
-local get_args = function()
-  return {}
-end
-
 local recursive_run = function()
   return false
 end
 
 ---@type neotest.Adapter
-local adapter = { name = "neotest-go" }
+local GoLangNeotestAdapter = { name = "neotest-go" }
 
-adapter.root = lib.files.match_root_pattern("go.mod", "go.sum")
+GoLangNeotestAdapter.root = lib.files.match_root_pattern("go.mod", "go.sum")
 
-function adapter.is_test_file(file_path)
+function GoLangNeotestAdapter.is_test_file(file_path)
   if not vim.endswith(file_path, ".go") then
     return false
   end
@@ -38,7 +28,7 @@ end
 
 ---@param position neotest.Position The position to return an ID for
 ---@param namespaces neotest.Position[] Any namespaces the position is within
-function adapter._generate_position_id(position, namespaces)
+function GoLangNeotestAdapter._generate_position_id(position, namespaces)
   local prefix = {}
   for _, namespace in ipairs(namespaces) do
     if namespace.type ~= "file" then
@@ -51,116 +41,71 @@ end
 
 ---@async
 ---@return neotest.Tree| nil
-function adapter.discover_positions(path)
+function GoLangNeotestAdapter.discover_positions(path)
   local query = [[
-    ;;query
-    ((function_declaration
-      name: (identifier) @test.name)
-      (#match? @test.name "^(Test|Example)"))
-      @test.definition
+    ;;query for Namespace or Context Block
+    ((call_expression
+      function: (identifier) @func_name (#match? @func_name "^(Describe|Context)$")
+      arguments: (argument_list (_) @namespace.name (func_literal))
+    )) @namespace.definition
 
-    (method_declaration
-      name: (field_identifier) @test.name
-      (#match? @test.name "^(Test|Example)")) @test.definition
+    ;;query for It or DescribeTable block
+    ((call_expression
+        function: (identifier) @func_name
+        arguments: (argument_list (_) @test.name (func_literal))
+    ) (#match? @func_name "^(It|DescribeTable)$")) @test.definition
 
-    (call_expression
-      function: (selector_expression
-        field: (field_identifier) @test.method)
-        (#match? @test.method "^Run$")
-      arguments: (argument_list . (interpreted_string_literal) @test.name))
-      @test.definition
+
   ]]
 
-  if get_experimental_opts().test_table then
-    query = query
-      .. [[
-;; query for list table tests
-    (block
-      (short_var_declaration
-        left: (expression_list
-          (identifier) @test.cases)
-        right: (expression_list
-          (composite_literal
-            (literal_value
-              (literal_element
-                (literal_value
-                  (keyed_element
-                    (literal_element
-                      (identifier) @test.field.name)
-                    (literal_element
-                      (interpreted_string_literal) @test.name)))) @test.definition))))
-      (for_statement
-        (range_clause
-          left: (expression_list
-            (identifier) @test.case)
-          right: (identifier) @test.cases1
-            (#eq? @test.cases @test.cases1))
-        body: (block
-         (expression_statement
-          (call_expression
-            function: (selector_expression
-              field: (field_identifier) @test.method)
-              (#match? @test.method "^Run$")
-            arguments: (argument_list
-              (selector_expression
-                operand: (identifier) @test.case1
-                (#eq? @test.case @test.case1)
-                field: (field_identifier) @test.field.name1
-                (#eq? @test.field.name @test.field.name1))))))))
-
-;; query for map table tests 
-	(block
-      (short_var_declaration
-        left: (expression_list
-          (identifier) @test.cases)
-        right: (expression_list
-          (composite_literal
-            (literal_value
-              (keyed_element
-            	(literal_element
-                  (interpreted_string_literal)  @test.name)
-                (literal_element
-                  (literal_value)  @test.definition))))))
-	  (for_statement
-       (range_clause
-          left: (expression_list
-            ((identifier) @test.key.name)
-            ((identifier) @test.case))
-          right: (identifier) @test.cases1
-            (#eq? @test.cases @test.cases1))
-	      body: (block
-           (expression_statement
-            (call_expression
-              function: (selector_expression
-                field: (field_identifier) @test.method)
-                (#match? @test.method "^Run$")
-                arguments: (argument_list
-                ((identifier) @test.key.name1
-                (#eq? @test.key.name @test.key.name1))))))))
-    ]]
-  end
-
   return lib.treesitter.parse_positions(path, query, {
-    require_namespaces = false,
+    require_namespaces = true,
     nested_tests = true,
+    -- build_position = "require('neotest-go')._build_position",
     position_id = "require('neotest-go')._generate_position_id",
   })
 end
 
+local function escapeTestPattern(s)
+  return (
+    s:gsub("%(", "%\\(")
+      :gsub("%)", "%\\)")
+      :gsub("%]", "%\\]")
+      :gsub("%[", "%\\[")
+      :gsub("%*", "%\\*")
+      :gsub("%+", "%\\+")
+      :gsub("%-", "%\\-")
+      :gsub("%?", "%\\?")
+      :gsub("%$", "%\\$")
+      :gsub("%^", "%\\^")
+      :gsub("%/", "%\\/")
+      :gsub("%'", "%\\'")
+  )
+end
+
 ---@async
 ---@param args neotest.RunArgs
----@return neotest.RunSpec
-function adapter.build_spec(args)
-  local results_path = async.fn.tempname()
-  local position = args.tree:data()
+---@return nil | neotest.RunSpec | neotest.RunSpec[]
+GoLangNeotestAdapter.build_spec = function(args)
+  local results_path = async.fn.tempname() .. ".json"
+  local tree = args.tree
+
+  if not tree then
+    return
+  end
+
+  local position = tree:data()
+
   local dir = "./"
   if recursive_run() then
     dir = "./..."
   end
+
   local location = position.path
   if fn.isdirectory(position.path) ~= 1 then
     location = fn.fnamemodify(position.path, ":h")
   end
+
   local command = vim.tbl_flatten({
     "cd",
     location,
@@ -169,15 +114,27 @@ function adapter.build_spec(args)
     "test",
     "-v",
     "-json",
-    utils.get_build_tags(),
-    vim.list_extend(get_args(), args.extra_args or {}),
-    dir,
   })
+
+  local testNamePattern = position.name
+  if position.type == "test" or position.type == "namespace" then
+    -- pos.id in form "path/to/file::Describe text::test text"
+    -- e.g.: id = '/Users/jarmex/Projects/go/testing/main_test.go::"Main"::can_multiply_up_two_numbers',
+    local testName = string.sub(position.id, string.find(position.id, "::") + 2)
+    testName, _ = string.gsub(testName, "::", " ")
+    testName, _ = string.gsub(testName, '"', "")
+    testNamePattern = escapeTestPattern(testName)
+    vim.list_extend(command, { "-ginkgo.focus", '"' .. testNamePattern .. '"' })
+  else
+    vim.list_extend(command, { dir })
+  end
+
   return {
     command = table.concat(command, " "),
     context = {
       results_path = results_path,
       file = position.path,
+      name = position.name,
     },
   }
 end
@@ -187,7 +144,7 @@ end
 ---@param result neotest.StrategyResult
 ---@param tree neotest.Tree
 ---@return table<string, neotest.Result[]>
-function adapter.results(spec, result, tree)
+function GoLangNeotestAdapter.results(spec, result, tree)
   local go_root = utils.get_go_root(spec.context.file)
   if not go_root then
     return {}
@@ -202,7 +159,7 @@ function adapter.results(spec, result, tree)
     logger.error("neotest-go: could not read output: " .. lines)
     return {}
   end
-  return adapter.prepare_results(tree, lines, go_root, go_module)
+  return GoLangNeotestAdapter.prepare_results(tree, lines, go_root, go_module)
 end
 
 ---@param tree neotest.Tree
@@ -210,7 +167,7 @@ end
 ---@param go_root string
 ---@param go_module string
 ---@return table<string, neotest.Result[]>
-function adapter.prepare_results(tree, lines, go_root, go_module)
+function GoLangNeotestAdapter.prepare_results(tree, lines, go_root, go_module)
   local tests, log = output.marshal_gotest_output(lines)
   local results = {}
   local no_results = vim.tbl_isempty(tests)
@@ -218,6 +175,7 @@ function adapter.prepare_results(tree, lines, go_root, go_module)
   local file_id
   empty_result_fname = async.fn.tempname()
   fn.writefile(log, empty_result_fname)
+
   for _, node in tree:iter_nodes() do
     local value = node:data()
     if no_results then
@@ -234,27 +192,26 @@ function adapter.prepare_results(tree, lines, go_root, go_module)
       }
       file_id = value.id
     else
-      local normalized_id = utils.normalize_id(value.id, go_root, go_module)
-      local test_result = tests[normalized_id]
-      -- file level node
-      if test_result then
-        local fname = async.fn.tempname()
-        fn.writefile(test_result.output, fname)
-        results[value.id] = {
-          status = test_result.status,
-          short = table.concat(test_result.output, ""),
-          output = fname,
-        }
-        local errors = utils.get_errors_from_test(test_result, utils.get_filename_from_id(value.id))
-        if errors then
-          results[value.id].errors = errors
-        end
-        if test_result.status == test_statuses.fail and file_id then
-          results[file_id].status = test_statuses.fail
-        end
+      -- this is a hack for now. if one test fails all tests fails. However, the test that passed should still be marked as passed [TODO]
+      local _, test = next(tests)
+
+      local fname = async.fn.tempname()
+      fn.writefile(test.output, fname)
+      results[value.id] = {
+        status = test.status,
+        output = fname,
+      }
+
+      local errors = utils.get_errors_from_test(test, utils.get_filename_from_id(value.id))
+      if errors then
+        results[value.id].errors = errors
+      end
+      if test.status == test_statuses.fail and file_id then
+        results[file_id].status = test_statuses.fail
       end
     end
   end
+
   return results
 end
 
@@ -262,7 +219,7 @@ local is_callable = function(obj)
   return type(obj) == "function" or (type(obj) == "table" and obj.__call)
 end
 
-setmetatable(adapter, {
+setmetatable(GoLangNeotestAdapter, {
   __call = function(_, opts)
     if is_callable(opts.experimental) then
       get_experimental_opts = opts.experimental
@@ -287,8 +244,8 @@ setmetatable(adapter, {
         return opts.recursive_run
       end
     end
-    return adapter
+    return GoLangNeotestAdapter
   end,
 })
 
-return adapter
+return GoLangNeotestAdapter
