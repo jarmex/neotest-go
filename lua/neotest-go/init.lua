@@ -119,12 +119,11 @@ GoLangNeotestAdapter.build_spec = function(args)
     "test",
     "-v",
     "-json",
-    "-count=1",
+    "-failfast",
   })
 
   -- print(vim.inspect(position))
   if position.type == "test" or position.type == "namespace" then
-    -- pos.id in form "path/to/file::Describe text::test text"
     -- e.g.: id = '/Users/jarmex/Projects/go/testing/main_test.go::"Main"::can_multiply_up_two_numbers',
     local testName = string.sub(position.id, string.find(position.id, "::") + 2)
     testName, _ = string.gsub(testName, "::", " ")
