@@ -4,7 +4,6 @@ local lib = require("neotest.lib")
 local logger = require("neotest.logging")
 local async = require("neotest.async")
 local utils = require("neotest-go.utils")
-local output = require("neotest-go.output")
 local test_statuses = require("neotest-go.test_status")
 
 local recursive_run = function()
@@ -115,11 +114,10 @@ GoLangNeotestAdapter.build_spec = function(args)
     "cd",
     location,
     "&&",
-    "go",
-    "test",
+    "ginkgo",
     "-v",
-    "-json",
-    "-failfast",
+    -- "-json",
+    -- "-failfast",
   })
 
   -- print(vim.inspect(position))
@@ -129,7 +127,7 @@ GoLangNeotestAdapter.build_spec = function(args)
     testName, _ = string.gsub(testName, "::", " ")
     testName, _ = string.gsub(testName, "_", " ") -- tempporary fix for ginkgo
     testName, _ = string.gsub(testName, '"', "")
-    vim.list_extend(command, { "-ginkgo.focus", '"' .. testName .. '"' })
+    vim.list_extend(command, { "--focus", '"' .. testName .. '"' })
   else
     vim.list_extend(command, { dir })
   end
@@ -153,21 +151,45 @@ end
 ---@param tree neotest.Tree
 ---@return table<string, neotest.Result[]>
 function GoLangNeotestAdapter.results(spec, result, tree)
-  local go_root = utils.get_go_root(spec.context.file)
-  if not go_root then
-    return {}
-  end
-  local go_module = utils.get_go_module_name(go_root)
-  if not go_module then
-    return {}
-  end
-
   local success, lines = pcall(lib.files.read_lines, result.output)
   if not success then
     logger.error("neotest-go: could not read output: " .. lines)
     return {}
   end
-  return GoLangNeotestAdapter.prepare_results(tree, lines, go_root, go_module)
+
+  return GoLangNeotestAdapter.prepare_results(tree, lines)
+end
+
+local isTestFailed = function(lines, testname)
+  testname = string.gsub(testname, '"', "")
+  local pattern = "%[%w+.*%].+%[It%]%s" .. testname
+
+  for _, text in ipairs(lines) do
+    for line in text:gmatch("[^\r\n]+") do
+      if line:find(pattern) then
+        return test_statuses.fail
+      end
+    end
+  end
+
+  return test_statuses.pass
+end
+
+local isTestAllFailed = function(lines)
+  local pattern =
+    "(%w+)!%s--%-?%s*%d+%s*Passed%s*|%s*%d+%s*Failed%s*|%s*%d+%s*Pending%s*|%s*%d+%s*Skipped"
+
+  for _, text in ipairs(lines) do
+    for line in text:gmatch("[^\r\n]+") do
+      local status = line:match(pattern)
+      if status and status == "FAIL" then
+        -- print("Status: " .. status)
+        return test_statuses.fail
+      end
+    end
+  end
+
+  return test_statuses.pass
 end
 
 ---@param tree neotest.Tree
@@ -175,50 +197,25 @@ end
 ---@param go_root string
 ---@param go_module string
 ---@return table<string, neotest.Result[]>
-function GoLangNeotestAdapter.prepare_results(tree, lines, go_root, go_module)
-  local tests, log = output.marshal_gotest_output(lines)
+function GoLangNeotestAdapter.prepare_results(tree, lines)
   local results = {}
-  local no_results = vim.tbl_isempty(tests)
   local empty_result_fname
-  local file_id
   empty_result_fname = async.fn.tempname()
-  fn.writefile(log, empty_result_fname)
+  fn.writefile(lines, empty_result_fname)
 
   for _, node in tree:iter_nodes() do
     local value = node:data()
-    if no_results then
-      results[value.id] = {
-        status = test_statuses.fail,
-        output = empty_result_fname,
-      }
-      break
-    end
+
     if value.type == "file" then
       results[value.id] = {
-        status = test_statuses.pass,
+        status = isTestAllFailed(lines),
         output = empty_result_fname,
       }
-      file_id = value.id
-    else
-      -- this is a hack for now. if one test fails all tests fails. However, the test that passed should still be marked as passed [TODO]
-      local _, test = next(tests)
-
-      local fname = async.fn.tempname()
-      fn.writefile(test.output, fname)
+    else -- if value.type == "test" or value.type == "namespace" then
       results[value.id] = {
-        status = test.status,
-        short = table.concat(test.output, ""),
-        output = fname,
+        status = isTestFailed(lines, value.name),
+        output = empty_result_fname,
       }
-
-      local errors = utils.get_errors_from_test(test, utils.get_filename_from_id(value.id))
-      if errors then
-        results[value.id].errors = errors
-      end
-      if test.status == test_statuses.fail and file_id then
-        results[file_id].status = test_statuses.fail
-      end
-      -- print(vim.inspect(results))
     end
   end
 
