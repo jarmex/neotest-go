@@ -176,8 +176,7 @@ local isTestFailed = function(lines, testname)
 end
 
 local isTestAllFailed = function(lines)
-  local pattern =
-    "(%w+)!%s--%-?%s*%d+%s*Passed%s*|%s*%d+%s*Failed%s*|%s*%d+%s*Pending%s*|%s*%d+%s*Skipped"
+  local pattern = "(%u+)!.+%d+%s*Passed.+%d+%s*Failed.+%d+%s*Pending.+%d+%s*Skipped"
 
   for _, text in ipairs(lines) do
     for line in text:gmatch("[^\r\n]+") do
@@ -211,7 +210,12 @@ function GoLangNeotestAdapter.prepare_results(tree, lines)
         status = isTestAllFailed(lines),
         output = empty_result_fname,
       }
-    else -- if value.type == "test" or value.type == "namespace" then
+    elseif value.type == "test" then
+      results[value.id] = {
+        status = isTestAllFailed(lines),
+        output = empty_result_fname,
+      }
+    else
       results[value.id] = {
         status = isTestFailed(lines, value.name),
         output = empty_result_fname,
