@@ -44,7 +44,7 @@ function GoLangNeotestAdapter.discover_positions(path)
   local query = [[
     ;;query for Namespace or Context Block
     ((call_expression
-      function: (identifier) @func_name (#match? @func_name "^(Describe|Context)$")
+      function: (identifier) @func_name (#match? @func_name "^(Describe|Context|When)$")
       arguments: (argument_list (interpreted_string_literal) @namespace.name (func_literal))
     )) @namespace.definition
 
@@ -125,7 +125,7 @@ GoLangNeotestAdapter.build_spec = function(args)
     -- e.g.: id = '/Users/jarmex/Projects/go/testing/main_test.go::"Main"::can_multiply_up_two_numbers',
     local testName = string.sub(position.id, string.find(position.id, "::") + 2)
     testName, _ = string.gsub(testName, "::", " ")
-    testName, _ = string.gsub(testName, "_", " ") -- tempporary fix for ginkgo
+    testName, _ = string.gsub(testName, "_", " ") -- temporary fix for ginkgo
     testName, _ = string.gsub(testName, '"', "")
     vim.list_extend(command, { "--focus", '"' .. testName .. '"' })
   else
